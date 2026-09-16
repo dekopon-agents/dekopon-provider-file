@@ -109,9 +109,12 @@ No full libmagic rules, recursive containers, encoding diagnosis or deep readers
 ## Owner-controlled grants and routing
 
 These are **fragments to adapt**, not a runnable deployment. Register the built
-component as provider `file` in the owner's broker provider configuration. Include
-`file.identify` in the catalog agent's `capabilities` and `file` in its
-`providers`. Proposal surface alone grants no authority.
+component as provider `file` in the owner's broker provider configuration.
+At the pinned core revision, catalog agent `capabilities` and `providers` fields
+are informational/inert, not requirements for reach or discovery and not grants.
+Actual discovery uses effective broker capability answers backed by matching
+constraint sets and Cedar authorization. Configure those broker-side controls
+and the route's asset expansion separately.
 
 Broker constraint-set entry (under `constraintSets`):
 

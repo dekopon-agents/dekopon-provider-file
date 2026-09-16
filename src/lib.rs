@@ -65,7 +65,7 @@ impl Provider for FileProvider {
         let command = Command::new("file")
             .version(env!("CARGO_PKG_VERSION"))
             .about("Identify supplied data, never open a path or fetch a URL")
-            .after_help("DATA is a chat-asset:N marker (gateway expansion required) or a base64 data URL. With no DATA, pipe one data URL. Maximum decoded input: 262144 bytes.")
+            .after_help("DATA is a chat-asset:N marker (gateway expansion required) or a base64 data URL. Current chat asset expansion supports only PNG/JPEG/WebP/GIF, not generic files or HEIC. With no DATA, pipe one data URL. Maximum whole decoded input: 262144 bytes (256 KiB); larger inputs are refused, never clipped.")
             .arg(Arg::new("data").value_name("DATA"));
         cli::run_command(command, argv, stdin, |matches, stdin| {
             let data = match (matches.get_one::<String>("data"), stdin) {

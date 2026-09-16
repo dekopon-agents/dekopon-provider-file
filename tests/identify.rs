@@ -164,6 +164,11 @@ fn command_only_proposes_and_does_not_expand_markers() {
     };
     assert_eq!(status, 0);
     assert!(stdout.contains("262144"));
+    assert!(stdout.contains(
+        "Current chat asset expansion supports only PNG/JPEG/WebP/GIF, not generic files or HEIC."
+    ));
+    assert!(stdout.contains("256 KiB"));
+    assert!(stdout.contains("larger inputs are refused, never clipped"));
     assert!(FileProvider::run_command(&[], None).is_err());
     assert!(FileProvider::run_command(&["x".into()], Some("x")).is_err());
     assert!(matches!(

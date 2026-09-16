@@ -109,6 +109,11 @@ async fn broker_runs_identification_cli_and_full_limit_without_extra_authority()
     };
     assert_eq!(status, 0);
     assert!(stdout.contains("262144"));
+    assert!(stdout.contains(
+        "Current chat asset expansion supports only PNG/JPEG/WebP/GIF, not generic files or HEIC."
+    ));
+    assert!(stdout.contains("256 KiB"));
+    assert!(stdout.contains("larger inputs are refused, never clipped"));
     Ok(())
 }
 
