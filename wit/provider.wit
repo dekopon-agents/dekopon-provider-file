@@ -1,0 +1,5 @@
+package dekopon:file@0.1.0;
+
+world provider {
+    include dekopon:provider/provider-cli@0.3.0;
+}
