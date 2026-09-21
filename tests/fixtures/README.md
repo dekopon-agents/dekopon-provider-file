@@ -14,6 +14,6 @@ open('pixel.png', 'wb').write(png)
 ```
 
 PNG specification: https://www.w3.org/TR/png-3/
-Other test vectors are original synthetic signature/box bytes in `tests/identify.rs`,
+Other test vectors are original synthetic signature/box bytes in `src/identify_tests.rs`,
 not complete JPEG/PDF/ZIP/HEIC/AVIF files. They intentionally exercise identification
 without claiming to prove full-file or decoder validity. Test source is dual MIT/Apache-2.0.

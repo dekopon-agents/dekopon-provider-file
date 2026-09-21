@@ -2,7 +2,9 @@
 //! the published testkit cannot supply asset descriptors.
 use std::{path::PathBuf, process::Command};
 
-use dekopon_provider_sdk_testkit::{CommandRunOutcome, FakeBroker};
+use dekopon_provider_sdk_testkit::{
+    BrokerHostError, CommandRunOutcome, FakeBroker, FakeBrokerError,
+};
 use serde_json::json;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -74,15 +76,22 @@ async fn broker_proposes_without_io_and_refuses_unpassed_assets() -> TestResult 
             .invoke(capability.as_str(), input)
             .await
             .expect_err("reference was not passed");
+        // The testkit passes no descriptors: admission refuses before guest invoke.
+        let FakeBrokerError::Invocation(failure) = error else {
+            panic!("expected invocation admission failure: {error}")
+        };
+        let BrokerHostError::AssetInput { source } = failure.error.as_ref() else {
+            panic!("expected asset admission failure: {failure}")
+        };
         assert_eq!(
-            error.provider_failure().expect("guest refusal").0,
-            "unknown-reference"
+            source.to_string(),
+            "asset descriptor count does not match references"
         );
     }
     for input in [
         json!({"data":"data:text/plain;base64,eA=="}),
         json!({"data":"/etc/passwd"}),
-        json!({"data":"chat-asset:1", "extra":true}),
+        json!({"data":"not-a-reference", "extra":true}),
     ] {
         let error = broker
             .invoke("file.identify", input)
