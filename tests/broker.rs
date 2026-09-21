@@ -1,10 +1,11 @@
-//! Mandatory component tests, including exact zero ambient or Dekopon imports.
+//! Mandatory component contract tests. Native fake handles cover asset reads:
+//! the published testkit cannot supply asset descriptors.
 use std::{path::PathBuf, process::Command};
 
-use base64::{Engine, engine::general_purpose::STANDARD};
-use dekopon_file_provider::MAX_BYTES;
-use dekopon_provider_sdk_testkit::{BrokerHostLimits, CommandRunOutcome, FakeBroker};
-use serde_json::{Value, json};
+use dekopon_provider_sdk_testkit::{
+    BrokerHostError, CommandRunOutcome, FakeBroker, FakeBrokerError,
+};
+use serde_json::json;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -15,12 +16,8 @@ fn component() -> PathBuf {
     )
 }
 
-fn input(bytes: &[u8]) -> Value {
-    json!({"data": format!("data:application/octet-stream;base64,{}", STANDARD.encode(bytes))})
-}
-
 #[test]
-fn component_has_exactly_zero_imports_and_three_exports() {
+fn component_imports_only_assets_and_has_three_exports() {
     let output = Command::new("wasm-tools")
         .args(["component", "wit"])
         .arg(component())
@@ -36,7 +33,8 @@ fn component_has_exactly_zero_imports_and_three_exports() {
         .lines()
         .filter(|line| line.trim_start().starts_with("import "))
         .collect();
-    assert!(imports.is_empty(), "unexpected imports: {imports:?}");
+    assert_eq!(imports.len(), 1, "{wit}");
+    assert!(imports[0].contains("dekopon:asset/asset@0.1.0"), "{wit}");
     let exports: Vec<_> = wit
         .lines()
         .filter(|line| line.trim_start().starts_with("export "))
@@ -53,88 +51,66 @@ fn component_has_exactly_zero_imports_and_three_exports() {
 }
 
 #[tokio::test]
-async fn broker_runs_identification_cli_and_full_limit_without_extra_authority() -> TestResult {
-    let limits = BrokerHostLimits::default();
-    assert_eq!(limits.max_memory_bytes, 64 * 1024 * 1024);
-    assert_eq!(limits.max_input_bytes, 1_048_576);
+async fn broker_proposes_without_io_and_refuses_unpassed_assets() -> TestResult {
     let broker = FakeBroker::builder()
         .component(component())
         .provider("file")
-        .host_limits(limits)
         .build()
         .await?;
-    let png = broker
-        .invoke("file.identify", input(include_bytes!("fixtures/pixel.png")))
-        .await?;
-    assert_eq!(png["mime"], "image/png");
-    for bytes in [vec![0; MAX_BYTES], vec![b'a'; MAX_BYTES]] {
-        let result = broker.invoke("file.identify", input(&bytes)).await?;
-        assert_eq!(result["input_bytes"], MAX_BYTES);
-        assert_eq!(result["validated"], false);
-        assert!(serde_json::to_vec(&result)?.len() < 4096);
+    for (args, stdin) in [
+        (vec!["chat-asset:1".into()], None),
+        (vec![], Some("chat-asset:1")),
+    ] {
+        let CommandRunOutcome::Proposed {
+            capability,
+            input,
+            secret_use,
+        } = broker.run_command("file", &args, stdin).await?
+        else {
+            panic!("proposal")
+        };
+        assert_eq!(capability.as_str(), "file.identify");
+        assert_eq!(input, json!({"data":"chat-asset:1"}));
+        assert!(secret_use.is_none());
+        let error = broker
+            .invoke(capability.as_str(), input)
+            .await
+            .expect_err("reference was not passed");
+        // The testkit passes no descriptors: admission refuses before guest invoke.
+        let FakeBrokerError::Invocation(failure) = error else {
+            panic!("expected invocation admission failure: {error}")
+        };
+        let BrokerHostError::AssetInput { source } = failure.error.as_ref() else {
+            panic!("expected asset admission failure: {failure}")
+        };
+        assert_eq!(
+            source.to_string(),
+            "asset descriptor count does not match references"
+        );
     }
-    for (input, code) in [
-        (input(&vec![0; MAX_BYTES + 1]), "input-too-large"),
-        (json!({"data": "chat-asset:1"}), "unresolved-asset"),
-        (
-            json!({"data": "data:text/plain;base64,", "extra": true}),
-            "invalid-input",
-        ),
+    for input in [
+        json!({"data":"data:text/plain;base64,eA=="}),
+        json!({"data":"/etc/passwd"}),
+        json!({"data":"not-a-reference", "extra":true}),
     ] {
         let error = broker
             .invoke("file.identify", input)
             .await
-            .expect_err("provider refusal");
-        assert_eq!(error.provider_failure().expect("guest error").0, code);
+            .expect_err("invalid input");
+        assert_eq!(
+            error.provider_failure().expect("guest refusal").0,
+            "invalid-input"
+        );
     }
-    let CommandRunOutcome::Proposed {
-        capability,
-        input,
-        secret_use,
-    } = broker
-        .run_command("file", &[], Some("data:text/plain;base64,aGVsbG8="))
-        .await?
-    else {
-        panic!("proposal")
-    };
-    assert!(secret_use.is_none());
-    assert_eq!(
-        broker.invoke(capability.as_str(), input).await?["mime"],
-        "text/plain"
-    );
     let CommandRunOutcome::Rendered { stdout, status, .. } =
         broker.run_command("file", &["--help".into()], None).await?
     else {
         panic!("help")
     };
     assert_eq!(status, 0);
-    assert!(stdout.contains("262144"));
-    assert!(stdout.contains(
-        "Current chat asset expansion supports only PNG/JPEG/WebP/GIF, not generic files or HEIC."
-    ));
-    assert!(stdout.contains("256 KiB"));
-    assert!(stdout.contains("larger inputs are refused, never clipped"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn broker_fuel_and_wire_limits_remain_enforced() -> TestResult {
-    let broker = FakeBroker::builder()
-        .component(component())
-        .provider("file")
-        .host_limits(BrokerHostLimits {
-            fuel: 1_000_000,
-            ..BrokerHostLimits::default()
-        })
-        .build()
-        .await?;
+    assert!(stdout.contains("65536"));
     let error = broker
-        .invoke("file.identify", input(&vec![b'a'; MAX_BYTES]))
-        .await
-        .expect_err("fuel binds maximum input");
-    assert!(error.provider_failure().is_none());
-    let error = broker
-        .invoke("file.identify", json!({"data": "x".repeat(1_048_577)}))
+        .invoke("file.identify", json!({"data":"x".repeat(1_048_577)}))
         .await
         .expect_err("wire limit");
     assert!(error.provider_failure().is_none());

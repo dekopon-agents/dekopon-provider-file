@@ -1,4 +1,4 @@
-//! Import-free identification of bounded caller-supplied bytes, not file validation.
+//! Identification of a bounded decoded asset prefix, not file validation.
 mod input;
 mod manifest;
 
@@ -10,11 +10,18 @@ use file_format::FileFormat;
 use serde_json::{Value, json};
 
 pub const IDENTIFY: &str = "file.identify";
-pub const MAX_BYTES: usize = 262_144;
+/// Decoded prefix budget, matching the detector's existing text-probe bound.
+pub const PREFIX_BYTES: usize = 65_536;
 
 #[allow(unsafe_code)]
 mod bindings {
-    wit_bindgen::generate!({ path: "wit", world: "provider" });
+    wit_bindgen::generate!({
+        path: "wit",
+        world: "provider",
+        with: {
+            "dekopon:asset/asset@0.1.0": dekopon_provider_sdk::asset::bindings::dekopon::asset::asset,
+        },
+    });
 }
 #[allow(unsafe_code)]
 mod export {
@@ -36,36 +43,14 @@ impl Provider for FileProvider {
                 "the file provider exposes only file.identify",
             ));
         }
-        let bytes = input::decode(input)?;
-        let format = FileFormat::from_bytes(&bytes);
-        let (status, evidence) = match format {
-            FileFormat::Empty => ("empty", "empty-input"),
-            FileFormat::ArbitraryBinaryData => ("unknown", "no-recognized-signature"),
-            FileFormat::PlainText => ("identified", "bounded-text-heuristic"),
-            _ => ("identified", "signature-heuristic"),
-        };
-        Ok(json!({
-            "status": status,
-            "mime": format.media_type(),
-            "extension": if matches!(format, FileFormat::Empty | FileFormat::ArbitraryBinaryData) {
-                None
-            } else { Some(format.extension()) },
-            "description": format.name(),
-            "input_bytes": bytes.len(),
-            "bytes_supplied_to_detector": bytes.len(),
-            "input_clipped": false,
-            "evidence": evidence,
-            "validated": false,
-            "detector": "file-format/0.29.0; reader-txt",
-            "limitations": "Identification hint only: headers can be forged or incomplete; no structural, codec or safety validation. Text fallback checks at most 16 lines / 65536 bytes. Filename and declared MIME are ignored. Not libmagic parity."
-        }))
+        identify_with(input, asset::open)
     }
 
     fn run_command(argv: &[String], stdin: Option<&str>) -> Result<CommandRun, ProviderError> {
         let command = Command::new("file")
             .version(env!("CARGO_PKG_VERSION"))
-            .about("Identify supplied data, never open a path or fetch a URL")
-            .after_help("DATA is a chat-asset:N marker (gateway expansion required) or a base64 data URL. Current chat asset expansion supports only PNG/JPEG/WebP/GIF, not generic files or HEIC. With no DATA, pipe one data URL. Maximum whole decoded input: 262144 bytes (256 KiB); larger inputs are refused, never clipped.")
+            .about("Identify a chat asset's decoded prefix, never open a path or fetch a URL")
+            .after_help("DATA must be chat-asset:<N>. With no DATA, pipe one exact reference. Reads at most 65536 decoded bytes; no provider whole-file size ceiling. Identification is a hint, not validation.")
             .arg(Arg::new("data").value_name("DATA"));
         cli::run_command(command, argv, stdin, |matches, stdin| {
             let data = match (matches.get_one::<String>("data"), stdin) {
@@ -74,13 +59,11 @@ impl Provider for FileProvider {
                 _ => {
                     return Err(ProviderError::new(
                         "usage",
-                        "supply DATA or pipe one data URL, not both",
+                        "supply DATA or pipe one exact reference, not both",
                     ));
                 }
             };
-            if data.len() > input::MAX_DATA_URL_BYTES {
-                return Err(input::too_large());
-            }
+            input::reference(data)?;
             Ok(CommandInvocation {
                 capability: IDENTIFY.parse().expect("static capability"),
                 input: json!({"data": data}),
@@ -89,6 +72,69 @@ impl Provider for FileProvider {
         })
     }
 }
+
+use dekopon_provider_sdk::asset::{self, AssetError, Handle};
+
+trait AssetReader {
+    fn read(&self, buffer: &mut [u8]) -> Result<usize, AssetError>;
+}
+
+impl AssetReader for Handle {
+    fn read(&self, buffer: &mut [u8]) -> Result<usize, AssetError> {
+        Handle::read(self, buffer)
+    }
+}
+
+fn asset_error(error: AssetError) -> ProviderError {
+    // Preserve the stable class, but never echo host details or input labels.
+    ProviderError::new(
+        error.code.as_str(),
+        "could not read the referenced chat asset",
+    )
+}
+
+fn identify_with<R: AssetReader>(
+    input: Value,
+    open: impl FnOnce(&str) -> Result<R, AssetError>,
+) -> Result<Value, ProviderError> {
+    let reference = input::parse(input)?;
+    let handle = open(&reference).map_err(asset_error)?;
+    let mut bytes = vec![0; PREFIX_BYTES];
+    let mut used = 0;
+    while used < PREFIX_BYTES {
+        let read = handle.read(&mut bytes[used..]).map_err(asset_error)?;
+        if read == 0 {
+            break;
+        }
+        used += read;
+    }
+    bytes.truncate(used);
+    let format = FileFormat::from_bytes(&bytes);
+    let (status, evidence) = match format {
+        FileFormat::Empty => ("empty", "empty-input"),
+        FileFormat::ArbitraryBinaryData => ("unknown", "no-recognized-signature"),
+        FileFormat::PlainText => ("identified", "bounded-text-heuristic"),
+        _ => ("identified", "signature-heuristic"),
+    };
+    Ok(json!({
+        "status": status,
+        "mime": format.media_type(),
+        "extension": if matches!(format, FileFormat::Empty | FileFormat::ArbitraryBinaryData) {
+            None
+        } else { Some(format.extension()) },
+        "description": format.name(),
+        "bytes_supplied_to_detector": bytes.len(),
+        "prefix_limit_reached": bytes.len() == PREFIX_BYTES,
+        "evidence": evidence,
+        "validated": false,
+        "detector": "file-format/0.29.0; reader-txt",
+        "limitations": "Identification hint only: headers can be forged or incomplete; no structural, codec or safety validation. Text fallback checks at most 16 lines / 65536 bytes. Filename and declared MIME are ignored. Not libmagic parity."
+    }))
+}
+
+#[cfg(test)]
+#[path = "identify_tests.rs"]
+mod identify_tests;
 
 #[cfg(test)]
 mod tests {
@@ -99,6 +145,10 @@ mod tests {
         assert_eq!(
             include_str!("../wit/deps/provider.wit"),
             dekopon_provider_sdk::PROVIDER_WIT
+        );
+        assert_eq!(
+            include_str!("../wit/deps/asset.wit"),
+            dekopon_provider_sdk::ASSET_WIT
         );
         let manifest = FileProvider::manifest();
         assert_eq!(
