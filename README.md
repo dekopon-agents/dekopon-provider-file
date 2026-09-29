@@ -117,9 +117,8 @@ and wire bounds. The published testkit cannot pass asset descriptors, so actual
 handle reads are covered natively, not end-to-end through that testkit.
 Fixture provenance: `tests/fixtures/README.md`.
 
-Shared CI (`ci / validate`) includes independent reproducible builds. Release
-and cut-release callers pin shared workflows to
-`4cb9276ca166bee05c04e4c40ad9bca4b1f1065c` (v3). Release tags publish
+Shared CI (`ci / validate`) includes independent reproducible builds. CI and
+release callers track the shared workflows at `@main`. Release tags publish
 `ghcr.io/dekopon-agents/provider-file`; only explicit tags trigger publication.
 
 ## License
