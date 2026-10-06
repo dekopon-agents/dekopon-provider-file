@@ -1,5 +1,11 @@
 use super::*;
 use dekopon_provider_sdk::asset::AssetErrorCode;
+use dekopon_provider_sdk::provider::{self, Code, Failure};
+use serde_json::json;
+
+fn input(value: Value) -> input::Input {
+    serde_json::from_value(value).expect("valid input fixture")
+}
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -36,7 +42,7 @@ fn fake(bytes: &[u8], chunk: usize) -> FakeHandle {
     }
 }
 fn identify(bytes: &[u8]) -> Value {
-    identify_with(json!({"data":"chat-asset:1"}), |reference| {
+    identify_with(input(json!({"data":"chat-asset:1"})), |reference| {
         assert_eq!(reference, "chat-asset:1");
         Ok(fake(bytes, usize::MAX))
     })
@@ -55,7 +61,7 @@ fn real_png_and_signature_vectors_are_content_based() {
         (b"PK\x03\x04".as_slice(), "application/zip"),
         (b"GIF89a".as_slice(), "image/gif"),
     ] {
-        let result = identify_with(json!({"data":"chat-asset:1", "filename":"../../wrong.exe", "content_type":"text/plain"}), |_| Ok(fake(bytes, 3))).unwrap();
+        let result = identify_with(input(json!({"data":"chat-asset:1", "filename":"../../wrong.exe", "content_type":"text/plain"})), |_| Ok(fake(bytes, 3))).unwrap();
         assert_eq!(result["mime"], mime);
         assert_eq!(result, identify(bytes));
         assert_eq!(result["validated"], false);
@@ -77,7 +83,7 @@ fn prefix_budget_handles_short_reads_eof_and_large_assets() {
         let bytes = vec![0; size];
         let reader = fake(&bytes, 997);
         let requests = reader.requests.clone();
-        let result = identify_with(json!({"data":"chat-asset:9"}), |_| Ok(reader)).unwrap();
+        let result = identify_with(input(json!({"data":"chat-asset:9"})), |_| Ok(reader)).unwrap();
         assert_eq!(result["bytes_supplied_to_detector"], size.min(PREFIX_BYTES));
         assert_eq!(result["prefix_limit_reached"], size >= PREFIX_BYTES);
         let requests = requests.borrow();
@@ -109,61 +115,133 @@ fn invalid_inputs_never_open_and_errors_do_not_echo() {
         json!({"data":"chat-asset:1", "content_type":"x".repeat(128)}),
         json!({"data":"chat-asset:1", "filename":"\n"}),
     ] {
-        let error = identify_with::<FakeHandle>(invalid, |_| panic!("must not open")).unwrap_err();
-        assert!(!error.to_string().contains("PRIVATE_SENTINEL"));
+        if let Ok(input) = serde_json::from_value::<input::Input>(invalid) {
+            let error =
+                identify_with::<FakeHandle>(input, |_| panic!("must not open")).unwrap_err();
+            assert_eq!(error.code(), Code::INVALID_INPUT);
+            assert!(!error.to_string().contains("PRIVATE_SENTINEL"));
+        }
     }
-    let error = identify_with::<FakeHandle>(json!({"data":"chat-asset:1"}), |_| {
+    let error = identify_with::<FakeHandle>(input(json!({"data":"chat-asset:1"})), |_| {
         Err(AssetError {
             code: AssetErrorCode::UnknownReference,
             message: "PRIVATE_SENTINEL".into(),
         })
     })
     .unwrap_err();
-    assert!(error.to_string().contains("unknown-reference"));
+    assert_eq!(error.code(), Code::new("unknown-reference"));
     assert!(!error.to_string().contains("PRIVATE_SENTINEL"));
     let mut reader = fake(b"x", 1);
     reader.fail = true;
     let requests = reader.requests.clone();
-    let error = identify_with(json!({"data":"chat-asset:1"}), |_| Ok(reader)).unwrap_err();
+    let error = identify_with(input(json!({"data":"chat-asset:1"})), |_| Ok(reader)).unwrap_err();
     assert!(!error.to_string().contains("PRIVATE_SENTINEL"));
     assert_eq!(requests.borrow().len(), 1);
-    assert!(FileProvider::invoke(&"file.other".parse().unwrap(), json!({})).is_err());
+    assert!(matches!(
+        provider::command::<FileProvider>(&["bad-path".into()], false),
+        dekopon_provider_sdk::CommandRunOutcome::Failed { .. }
+    ));
 }
 
 #[test]
 fn command_is_pure_and_accepts_only_references() {
-    for (argv, stdin) in [
-        (vec!["chat-asset:1".into()], None),
-        (vec![], Some("chat-asset:1")),
-    ] {
-        let CommandRun::Proposal(proposal) = FileProvider::run_command(&argv, stdin).unwrap()
+    use dekopon_provider_sdk::CommandRunOutcome;
+    for piped in [false, true] {
+        let CommandRunOutcome::Proposed {
+            capability,
+            input,
+            secret_use,
+        } = provider::command::<FileProvider>(&["chat-asset:1".into()], piped)
         else {
             panic!("proposal")
         };
-        assert_eq!(proposal.capability.as_str(), IDENTIFY);
-        assert_eq!(proposal.input, json!({"data":"chat-asset:1"}));
-        assert!(proposal.secret_use.is_none());
+        assert_eq!(capability.as_str(), IDENTIFY);
+        assert_eq!(input, json!({"data":"chat-asset:1"}));
+        assert!(secret_use.is_none());
     }
     for data in [
         "data:text/plain;base64,eA==",
         "/etc/passwd",
         "chat-asset:1\n",
     ] {
-        assert!(FileProvider::run_command(&[data.into()], None).is_err());
+        assert!(matches!(
+            provider::command::<FileProvider>(&[data.into()], false),
+            CommandRunOutcome::Failed { .. }
+        ));
     }
-    assert!(FileProvider::run_command(&[], None).is_err());
-    assert!(FileProvider::run_command(&["chat-asset:1".into()], Some("chat-asset:1")).is_err());
-    let CommandRun::Rendered { status, stdout, .. } =
-        FileProvider::run_command(&["--help".into()], None).unwrap()
+    for piped in [false, true] {
+        let CommandRunOutcome::Failed { error } = provider::command::<FileProvider>(&[], piped)
+        else {
+            panic!("usage")
+        };
+        assert_eq!(error.code, "usage");
+        assert!(error.message.contains("positional"));
+    }
+    let CommandRunOutcome::Rendered { status, stdout, .. } =
+        provider::command::<FileProvider>(&["--help".into()], false)
     else {
         panic!("help")
     };
     assert_eq!(status, 0);
     assert!(stdout.contains("65536"));
+    assert!(stdout.contains("Pipe-only references are not supported"));
     assert!(matches!(
-        FileProvider::run_command(&["--mime".into()], None).unwrap(),
-        CommandRun::Rendered { status: 2, .. }
+        provider::command::<FileProvider>(&["--mime".into()], false),
+        CommandRunOutcome::Rendered { status: 2, .. }
     ));
+}
+
+#[test]
+fn output_is_one_json_line_and_closed_stdout_fails() {
+    let value = identify(b"hello\n");
+    let mut output = Vec::new();
+    emit(&value, &mut output).unwrap();
+    assert_eq!(output.iter().filter(|&&byte| byte == b'\n').count(), 1);
+    assert!(output.ends_with(b"\n"));
+    let parsed: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(parsed, value);
+    assert_eq!(parsed.as_object().unwrap().len(), 10);
+    // A writer that refuses writes models the closed stdio reader.
+    struct Closed;
+    impl std::io::Write for Closed {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    assert_eq!(
+        emit(&value, &mut Closed).unwrap_err().code(),
+        Code::new("output-closed")
+    );
+}
+
+#[test]
+fn typed_manifest_is_closed_and_minimal() {
+    let manifest = provider::manifest::<FileProvider>().unwrap();
+    assert_eq!(manifest.id.as_str(), "file");
+    assert_eq!(manifest.command_words, ["file"]);
+    assert_eq!(manifest.capabilities.len(), 1);
+    let capability = &manifest.capabilities[0];
+    assert_eq!(capability.id.as_str(), IDENTIFY);
+    assert_eq!(capability.effect, EffectKind::ReadOnly);
+    assert_eq!(capability.risk, RiskLevel::Low);
+    let schema = &capability.input_schema;
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["required"], json!(["data"]));
+    assert_eq!(
+        schema["properties"]["data"]["pattern"],
+        "^chat-asset:[0-9]+$"
+    );
+    assert_eq!(
+        schema["properties"]["filename"]["x-dekopon-maxUtf8Bytes"],
+        256
+    );
+    assert_eq!(
+        schema["properties"]["content_type"]["x-dekopon-maxUtf8Bytes"],
+        127
+    );
 }
 
 fn bmff(brand: &[u8; 4], compatible: &[u8; 4]) -> Vec<u8> {
