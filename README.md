@@ -123,9 +123,16 @@ that testkit. The old hand-authored manifest fixture was dropped because the
 SDK typed manifest and component conformance now establish the single contract.
 Fixture provenance: `tests/fixtures/README.md`.
 
-Shared CI (`ci / validate`) builds the component and checks its checksum and SBOM. CI and
-release callers track the shared workflows at `@main`. Release tags publish
-`ghcr.io/dekopon-agents/provider-file`; only explicit tags trigger publication.
+Shared CI (`ci / validate`) checks formatting, dependency policy, host and wasm
+clippy, the built component and checksum, locked tests (including component
+conformance against that built wasm), and the CycloneDX SBOM. Additional local
+pre-push checks include rustdoc with warnings denied, WIT decode/validation and
+fixture provenance. CI and release callers track the shared workflows at
+`@main`. Annotated release tags publish `ghcr.io/dekopon-agents/provider-file`;
+only explicit tags trigger publication. See [RELEASE.md](RELEASE.md) for the
+three release assets, attestation and OCI manifest verification. This repository
+does not establish live asset-read behavior: the testkit conformance exercises
+component imports/export and denial, while actual reads use native fake handles.
 
 ## License
 
