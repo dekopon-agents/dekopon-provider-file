@@ -24,7 +24,7 @@ pub const PREFIX_BYTES: usize = 65_536;
     after_help = "Use a positional file chat-asset:<N>. Pipe-only references are not supported: the reference must be proposed before authorization. Reads at most 65536 decoded bytes; identification is a hint, not validation."
 )]
 pub struct FileArgs {
-    /// Positional chat-asset:<N> reference (not a path or URL)
+    /// Positional `chat-asset:<N>` reference (not a path or URL)
     #[arg(value_name = "DATA")]
     data: Option<String>,
 }
