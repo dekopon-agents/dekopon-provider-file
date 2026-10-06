@@ -1,7 +1,7 @@
 # Dekopon file provider
 
 Content-based identification hints from a **bounded decoded prefix** of a chat
-asset. Uses Dekopon SDK 0.18.0 asset handles, not inline bytes, paths, URLs or
+asset. Uses Dekopon SDK 0.34.0 asset handles, not inline bytes, paths, URLs or
 subprocesses. Not the system `file` command or libmagic parity. No conversion,
 extraction, structural validation, malware scanning or image decoding.
 
@@ -11,25 +11,29 @@ Provider `file`; capability `file.identify`; effect `read-only`; risk `Low`.
 
 ```sh
 file chat-asset:1
-printf '%s' 'chat-asset:1' | file
 file --help
 ```
 
 `run-command` is pure: it proposes `{"data":"chat-asset:1"}` without opening
-anything. Supply exactly one positional reference or one exact piped reference
-(no trailing newline). `invoke` opens only an asset passed by the gateway for
-that invocation, then reads up to **65,536 decoded bytes**, handling short reads.
-No provider whole-file size ceiling remains: large assets are identified from
-the prefix. The host's asset admission limits still apply (SDK 0.18.0: 8 MiB
-decoded per asset). No data URLs or gateway expansion settings are supported.
+anything. Supply a positional `file chat-asset:<N>` reference. Pipe-only
+references are refused: the gateway must see the reference in the proposal
+before authorization, while `run-command` receives only a pipe-present boolean.
+No stdin is read before authorization and no asset listing bypasses admission.
+`invoke` opens only an asset passed by the gateway for that invocation, then
+reads up to **65,536 decoded bytes**, handling short reads. No provider
+whole-file size ceiling remains: large assets are identified from the prefix.
+The host's asset admission limits still apply. No data URLs or gateway
+expansion settings are supported.
 
 Input is a closed object with required `data`: exact `chat-asset:<N>`, where N
 is an unsigned 64-bit decimal id. Optional `filename` (256 UTF-8 bytes) and
 `content_type` (127 UTF-8 bytes) remain ignored, untrusted hints. No control
 characters; omitted/null are equivalent. Neither labels nor bytes are echoed.
 Unknown fields, malformed references, paths and URLs return `invalid-input`.
-Other capabilities return `unsupported-capability`. Open/read errors preserve
+Other capabilities return `unknown-capability`. Open/read errors preserve
 the SDK's stable error code, not host details; no retries or partial results.
+Success writes one newline-terminated JSON object to stdout; failures write
+sanitized stderr and exit nonzero, including a closed stdout.
 
 ### Result
 
@@ -83,41 +87,43 @@ file.identify:
   risk: Low
   constraints:
     timeoutMs: 30000
-    maxOutputBytes: 4096
 ```
 
 Reading an opened input requires **no asset grant**, HTTP/storage grant, or
 credentials. Reference presence is scoped to the current authorized invocation;
 listing another asset does not authorize reading it. No `chatAssetInputs` or
-`providerAttachments` route option is needed (both retired in core 0.18.0).
+`providerAttachments` route option is needed.
 This repository does not change a deployment or prove live transport behavior.
 
 ## Build and validate
 
-Rust 1.98.1; exact crates.io SDK/testkit 0.18.0 pins, locked graph. The component
-imports only `dekopon:asset/asset@0.1.0` and exports `describe`, `invoke`,
-`run-command`; no WASI imports. Provider/asset WIT mirrors match the resolved SDK.
+Rust 1.98.1; exact crates.io SDK/testkit 0.34.0 pins, locked graph. The component
+imports only `dekopon:asset/asset@0.1.0` and `dekopon:stdio/streams@0.1.0`,
+exports `dekopon:provider@0.4.0`; no WASI imports. The SDK owns the WIT.
 Use ordinary Cargo with the machine's existing wrapper configuration; each
 worktree owns its default `target/`.
 
 ```sh
 cargo fmt --all --check
-cargo deny --locked --all-features check bans licenses sources advisories
+cargo deny --all-features check bans licenses sources advisories
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo clippy --locked --lib --target wasm32-unknown-unknown -- -D warnings
-bash scripts/build.sh
-DEKOPON_PROVIDER_COMPONENT="$PWD/file-provider.wasm" cargo test --locked
+cargo clippy --locked --package dekopon-file-provider --lib --target wasm32-unknown-unknown -- -D warnings
+../provider-workflows/build.sh
+shasum -a 256 -c file-provider.wasm.sha256
+DEKOPON_PROVIDER_COMPONENT="$PWD/file-provider.wasm" cargo test --locked --workspace
 ```
 
 Native injected-handle tests cover identification vectors, misleading hints,
 short reads, EOF, 8 MiB input, exact prefix limits, failures and pure proposals.
 The mandatory component tests require `DEKOPON_PROVIDER_COMPONENT` (never skip
-when absent): imports/exports, pure CLI, invalid input, missing-reference refusal
-and wire bounds. The published testkit cannot pass asset descriptors, so actual
-handle reads are covered natively, not end-to-end through that testkit.
+when absent): typed conformance, exact imports/export, missing-descriptor refusal
+and invalid-reference refusal. The published testkit cannot pass asset
+descriptors, so actual handle reads are covered natively, not end-to-end through
+that testkit. The old hand-authored manifest fixture was dropped because the
+SDK typed manifest and component conformance now establish the single contract.
 Fixture provenance: `tests/fixtures/README.md`.
 
-Shared CI (`ci / validate`) includes independent reproducible builds. CI and
+Shared CI (`ci / validate`) builds the component and checks its checksum and SBOM. CI and
 release callers track the shared workflows at `@main`. Release tags publish
 `ghcr.io/dekopon-agents/provider-file`; only explicit tags trigger publication.
 
