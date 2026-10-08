@@ -1,7 +1,7 @@
 # Dekopon file provider
 
 Content-based identification hints from a **bounded decoded prefix** of a chat
-asset. Uses Dekopon SDK 0.34.0 asset handles, not inline bytes, paths, URLs or
+asset. Uses Dekopon SDK 0.36.0 asset handles, not inline bytes, paths, URLs or
 subprocesses. Not the system `file` command or libmagic parity. No conversion,
 extraction, structural validation, malware scanning or image decoding.
 
@@ -97,7 +97,7 @@ This repository does not change a deployment or prove live transport behavior.
 
 ## Build and validate
 
-Rust 1.98.1; exact crates.io SDK/testkit 0.34.0 pins, locked graph. The component
+Rust 1.98.1; exact crates.io SDK/testkit 0.36.0 pins, locked graph. The component
 imports only `dekopon:asset/asset@0.1.0` and `dekopon:stdio/streams@0.1.0`,
 exports `dekopon:provider@0.4.0`; no WASI imports. The SDK owns the WIT.
 Use ordinary Cargo with the machine's existing wrapper configuration; each

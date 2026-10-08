@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 — 2026-10-08
+
+- Pin the SDK and testkit to 0.36.0; the file identification contract and WIT surface remain unchanged.
+
 ## 0.3.0 — 2026-10-06
 
 - File identification now uses the SDK 0.34.0 typed asset and stdio contract while retaining its bounded read-only metadata result.
